@@ -42,7 +42,7 @@ The script is especially useful as part of a daily note-taking workflow. Run it 
 
 1. Clone this repository:
 ```bash
-git clone https://github.com/yourusername/obsidian-auto-tagger.git
+git clone https://github.com/undergroundpost/obsidian-auto-tagger.git
 cd obsidian-auto-tagger
 ```
 
