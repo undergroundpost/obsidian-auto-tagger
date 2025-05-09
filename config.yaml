@@ -1,0 +1,24 @@
+# Configuration for generate_tags.py
+# Place this file in the same directory as the script
+
+# Folder settings
+INPUT_FOLDER: "/Users/username/Obsidian/Vault"     # Main notes folder
+
+# Exclude folders (list of folders to ignore when scanning)
+EXCLUDE_FOLDERS:
+  - "/Users/username/Obsidian/Vault/AI"            # AI-related folder
+  - "/Users/username/Obsidian/Vault/Private"       # Private notes
+  - "/Users/username/Obsidian/Vault/Templates"     # Templates folder
+
+# LLM Provider settings
+LLM_PROVIDER: "ollama"                             # Options: "ollama" or "openai"
+
+# Ollama settings (used when LLM_PROVIDER is "ollama")
+OLLAMA_MODEL: "gemma3:12b"                         # Model to use
+OLLAMA_SERVER_ADDRESS: "http://localhost:11434"    # Ollama server address
+OLLAMA_CONTEXT_WINDOW: 32000                       # Context window size
+
+# OpenAI settings (used when LLM_PROVIDER is "openai")
+OPENAI_API_KEY: ""                                 # Your OpenAI API key (required for OpenAI)
+OPENAI_MODEL: "gpt-3.5-turbo"                      # OpenAI model to use (gpt-3.5-turbo is more widely available)
+OPENAI_MAX_TOKENS: 4000                            # Maximum tokens for responses
