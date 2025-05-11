@@ -85,10 +85,12 @@ def get_file_creation_time(file_path):
         return datetime.fromtimestamp(os.path.getctime(file_path))
 
 def find_md_files_from_previous_day(input_folder, exclude_folders, start_boundary, end_boundary):
-    """Find markdown files created/modified in the specified time range"""
+    """Find markdown files created/modified in the specified time range by humans (not by scripts)"""
     md_files = []
+    skipped_files = 0
     
     logger.info(f"Searching for Markdown files in: {input_folder}")
+    logger.info(f"Using date range: {start_boundary.date()} to {end_boundary.date()}")
     logger.info(f"Excluding folders: {exclude_folders}")
     
     for root, _, files in os.walk(input_folder):
@@ -106,41 +108,100 @@ def find_md_files_from_previous_day(input_folder, exclude_folders, start_boundar
             
             logger.debug(f"File: {file_path}, Creation: {file_ctime}, Modified: {file_mtime}")
             
-            # Check filesystem timestamps
-            if ((start_boundary <= file_ctime <= end_boundary) or 
-                (start_boundary <= file_mtime <= end_boundary)):
-                md_files.append(file_path)
-                continue
-            
-            # If not caught by timestamps, check frontmatter dates
-            try:
-                with open(file_path, 'r', encoding='utf-8') as f:
-                    content = f.read()
+            # Check if the file's timestamp is in the specified range
+            file_in_date_range = False
+            if (start_boundary <= file_ctime <= end_boundary) or (start_boundary <= file_mtime <= end_boundary):
+                file_in_date_range = True
                 
-                frontmatter, _ = parse_frontmatter(content)
-                
-                for date_field in ['created', 'date', 'creation_date', 'createdAt']:
-                    if date_field in frontmatter and frontmatter[date_field]:
+                # Now check if it's been processed and not modified since
+                try:
+                    with open(file_path, 'r', encoding='utf-8') as f:
+                        content = f.read()
+                    
+                    frontmatter, _ = parse_frontmatter(content)
+                    
+                    # If it has a processed timestamp, check if modified since
+                    if 'processed' in frontmatter:
                         try:
-                            fm_date = parser.parse(str(frontmatter[date_field]))
-                            if not isinstance(fm_date, datetime):
-                                fm_date = datetime.combine(fm_date, datetime.min.time())
-                                
-                            if start_boundary.date() <= fm_date.date() <= end_boundary.date():
+                            processed_time = parser.parse(str(frontmatter['processed']))
+                            if file_mtime > processed_time:
+                                # Modified after processing - include it
+                                logger.debug(f"File modified after last processing: {file_path}")
                                 md_files.append(file_path)
-                                break
-                        except (ValueError, TypeError) as e:
-                            logger.debug(f"Error parsing {date_field}: {e}")
-            except Exception as e:
-                logger.debug(f"Error checking frontmatter: {e}")
+                            else:
+                                # Not modified since processing - skip it
+                                logger.debug(f"Skipping file not modified since last processing: {file_path}")
+                                skipped_files += 1
+                        except (ValueError, TypeError):
+                            # Can't parse timestamp - include it to be safe
+                            md_files.append(file_path)
+                    else:
+                        # No processed timestamp - include it
+                        logger.debug(f"No processed timestamp, including file: {file_path}")
+                        md_files.append(file_path)
+                except Exception as e:
+                    # Error reading file - include it to be safe
+                    logger.debug(f"Error checking frontmatter: {e}")
+                    md_files.append(file_path)
+            
+            # If not already included based on file timestamps, check frontmatter dates
+            if not file_in_date_range and file_path not in md_files:
+                try:
+                    with open(file_path, 'r', encoding='utf-8') as f:
+                        content = f.read()
+                    
+                    frontmatter, _ = parse_frontmatter(content)
+                    
+                    # Check dates in frontmatter
+                    for date_field in ['created', 'date', 'creation_date', 'createdAt']:
+                        if date_field in frontmatter and frontmatter[date_field]:
+                            try:
+                                fm_date = parser.parse(str(frontmatter[date_field]))
+                                if not isinstance(fm_date, datetime):
+                                    fm_date = datetime.combine(fm_date, datetime.min.time())
+                                
+                                # Check if date is in range
+                                if start_boundary.date() <= fm_date.date() <= end_boundary.date():
+                                    # Also check processed timestamp if it exists
+                                    if 'processed' in frontmatter:
+                                        try:
+                                            processed_time = parser.parse(str(frontmatter['processed']))
+                                            # Only include if file metadata date is after processed time
+                                            if fm_date > processed_time:
+                                                logger.debug(f"Frontmatter date after processing time")
+                                                md_files.append(file_path)
+                                                break
+                                            else:
+                                                logger.debug(f"Frontmatter date not after processing time")
+                                                skipped_files += 1
+                                        except (ValueError, TypeError):
+                                            # Can't parse processed time - include it
+                                            md_files.append(file_path)
+                                    else:
+                                        # No processed timestamp - include it
+                                        logger.debug(f"Frontmatter date in range with no processed timestamp")
+                                        md_files.append(file_path)
+                                        break
+                            except (ValueError, TypeError):
+                                # Skip unparseable dates
+                                pass
+                except Exception as e:
+                    logger.debug(f"Error checking frontmatter: {e}")
     
     # Log results
     if not md_files:
         logger.warning("No files were found matching the date criteria!")
+        if skipped_files > 0:
+            logger.warning(f"{skipped_files} files were in date range but skipped (already processed)")
     else:
-        logger.info(f"Found {len(md_files)} Markdown files for processing")
-        for file_path in md_files:
+        logger.info(f"Found {len(md_files)} files for processing")
+        for file_path in md_files[:5]:  # Show first 5 files
             logger.info(f"  - {os.path.basename(file_path)}")
+        if len(md_files) > 5:
+            logger.info(f"  - ... and {len(md_files) - 5} more files")
+            
+        if skipped_files > 0:
+            logger.info(f"Additionally, {skipped_files} files in date range were skipped (already processed)")
     
     return md_files
 
@@ -199,6 +260,9 @@ def update_frontmatter_with_tags(content, tags):
         frontmatter['tags'] = existing_tags
     else:
         frontmatter['tags'] = tag_list
+    
+    # Add or update processed timestamp
+    frontmatter['processed'] = datetime.now().isoformat()
     
     # Generate new frontmatter with clean formatting
     new_frontmatter = yaml.dump(frontmatter, default_flow_style=False, sort_keys=False)
