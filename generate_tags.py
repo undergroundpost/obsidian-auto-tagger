@@ -124,13 +124,18 @@ def find_md_files_from_previous_day(input_folder, exclude_folders, start_boundar
                     if 'processed' in frontmatter:
                         try:
                             processed_time = parser.parse(str(frontmatter['processed']))
-                            if file_mtime > processed_time:
-                                # Modified after processing - include it
-                                logger.debug(f"File modified after last processing: {file_path}")
+                            # Use a 15-minute cooldown period to account for all automated scripts
+                            cooldown_period = timedelta(minutes=15)
+                            
+                            # Compare with cooldown: Only include the file if it was modified significantly after processing
+                            # This filters out modifications made by any automated script
+                            if file_mtime > (processed_time + cooldown_period):
+                                # Modified after cooldown period - likely a human modification
+                                logger.debug(f"File modified after cooldown period: {file_path}")
                                 md_files.append(file_path)
                             else:
-                                # Not modified since processing - skip it
-                                logger.debug(f"Skipping file not modified since last processing: {file_path}")
+                                # Modified within cooldown period - likely an automated script
+                                logger.debug(f"Skipping file modified within cooldown period (likely by script): {file_path}")
                                 skipped_files += 1
                         except (ValueError, TypeError):
                             # Can't parse timestamp - include it to be safe
@@ -166,16 +171,21 @@ def find_md_files_from_previous_day(input_folder, exclude_folders, start_boundar
                                     if 'processed' in frontmatter:
                                         try:
                                             processed_time = parser.parse(str(frontmatter['processed']))
-                                            # Only include if file metadata date is after processed time
-                                            if fm_date > processed_time:
-                                                logger.debug(f"Frontmatter date after processing time")
+                                            # Use a 15-minute cooldown period to account for all automated scripts
+                                            cooldown_period = timedelta(minutes=15)
+                                            
+                                            # Compare with cooldown: Only include the file if it was modified significantly after processing
+                                            # This filters out modifications made by any automated script
+                                            if file_mtime > (processed_time + cooldown_period):
+                                                # Modified after cooldown period - likely a human modification
+                                                logger.debug(f"File modified after cooldown period: {file_path}")
                                                 md_files.append(file_path)
-                                                break
                                             else:
-                                                logger.debug(f"Frontmatter date not after processing time")
+                                                # Modified within cooldown period - likely an automated script
+                                                logger.debug(f"Skipping file modified within cooldown period (likely by script): {file_path}")
                                                 skipped_files += 1
                                         except (ValueError, TypeError):
-                                            # Can't parse processed time - include it
+                                            # Can't parse timestamp - include it to be safe
                                             md_files.append(file_path)
                                     else:
                                         # No processed timestamp - include it
