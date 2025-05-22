@@ -1,16 +1,18 @@
 # Obsidian Auto Tagger
 
-A Python script that uses AI to automatically generate and add relevant tags to your Obsidian notes. The script scans for notes created or modified on the previous day, analyzes their content, and adds contextually appropriate tags to the frontmatter.
+A Python script that uses AI to automatically generate and add relevant tags to your Obsidian notes. The script intelligently processes unprocessed or recently modified notes, analyzes their content, and adds contextually appropriate tags to the frontmatter.
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](https://opensource.org/licenses/MIT)
 
 ## Key Features
 
-- 🔍 Scans your Obsidian vault for notes created or modified yesterday
+- 🔍 Intelligently processes notes based on modification timestamps with built-in cooldown mechanisms
 - 🤖 Uses AI (Ollama locally or OpenAI) to generate contextually relevant tags
 - 📊 Analyzes existing tags in your vault for consistency
 - 🏷️ Updates note frontmatter with new tags (without duplicating existing ones)
+- ⚡ Batch processing support for large vaults
 - ⏱️ Built-in rate limit handling and advanced retry mechanisms
+- 🛡️ Smart cooldown system prevents unnecessary reprocessing
 - 📝 Comprehensive logging for troubleshooting
 
 ## Why Use This Script?
@@ -20,10 +22,22 @@ Maintaining a consistent tagging system in Obsidian can be challenging but is cr
 - **Consistency**: By analyzing your entire vault's existing tags, it maintains a cohesive tagging system
 - **Reduced Cognitive Load**: No need to stop and think about appropriate tags while writing
 - **Improved Discoverability**: Better tagging means your notes are easier to find later
-- **Time-Saving**: Automatically processes new notes while you sleep
+- **Time-Saving**: Automatically processes new and modified notes intelligently
 - **Knowledge Connections**: Good tags help reveal connections between seemingly unrelated notes
+- **Scalable**: Batch processing handles large vaults efficiently
 
-The script is especially useful as part of a daily note-taking workflow. Run it as a nightly cron job, and each morning your new notes will be properly tagged and ready for reference.
+The script is especially useful as part of a regular note-taking workflow. It can run frequently without wasting resources, as it only processes files that need attention.
+
+## How It Works
+
+The script uses an intelligent processing system:
+
+1. **Never Processed**: Files without a `processed` timestamp in their frontmatter are automatically processed
+2. **Modified Since Processing**: Files modified after their last processing timestamp are reprocessed (with a 15-minute cooldown to prevent rapid reprocessing)
+3. **Ignore Buffer**: Files processed within the last 15 minutes are always included to handle edge cases
+4. **Batch Support**: Large numbers of files can be processed in configurable batches to avoid overwhelming the AI service
+
+This approach ensures notes get tagged when needed without unnecessary reprocessing.
 
 ## Requirements
 
@@ -102,9 +116,11 @@ OLLAMA_CONTEXT_WINDOW: 32000                       # Context window size
 
 # OpenAI settings (used when LLM_PROVIDER is "openai")
 OPENAI_API_KEY: ""                                 # Your OpenAI API key (required for OpenAI)
-OPENAI_MODEL: "gpt-3.5-turbo"                      # OpenAI model to use (gpt-3.5-turbo is more widely available)
+OPENAI_MODEL: "gpt-3.5-turbo"                      # OpenAI model to use
 OPENAI_MAX_TOKENS: 4000                            # Maximum tokens for responses
 ```
+
+**Note**: The script also supports the legacy `EXCLUDE_FOLDER` (singular) for backward compatibility, but `EXCLUDE_FOLDERS` (plural) is recommended.
 
 ## Prompt File
 
@@ -118,16 +134,22 @@ The script requires a prompt file named `generate_tags.md` in the same directory
 ./generate_tags.py
 ```
 
-### Specify a different date
-
-```bash
-./generate_tags.py --date 2025-05-01
-```
-
 ### Override configuration
 
 ```bash
 ./generate_tags.py --input "/path/to/vault" --model "llama3:8b" --server "http://192.168.1.100:11434"
+```
+
+### Process limited number of files
+
+```bash
+./generate_tags.py --limit 10
+```
+
+### Use batch processing for large vaults
+
+```bash
+./generate_tags.py --batch-mode --batch-size 25
 ```
 
 ### Enable debug logging
@@ -136,11 +158,16 @@ The script requires a prompt file named `generate_tags.md` in the same directory
 ./generate_tags.py --debug
 ```
 
+### OpenAI with rate limit protection
+
+```bash
+./generate_tags.py --provider openai --api-key "your-key" --delay 5
+```
+
 ## Command-line Options
 
 | Option         | Description                                     |
 |----------------|-------------------------------------------------|
-| `--date`       | Override date to check (YYYY-MM-DD)             |
 | `--debug`      | Enable detailed debug logging                   |
 | `--input`      | Override input folder                           |
 | `--exclude`    | Override exclude folders (can be used multiple times) |
@@ -150,6 +177,9 @@ The script requires a prompt file named `generate_tags.md` in the same directory
 | `--api-key`    | Override OpenAI API key                         |
 | `--delay`      | Add delay between files in seconds (helps with API rate limits) |
 | `--log-level`  | Set logging level (DEBUG, INFO, WARNING, ERROR, CRITICAL) |
+| `--limit`      | Limit number of files to process (0 for no limit) |
+| `--batch-mode` | Enable batch processing for large numbers of files |
+| `--batch-size` | Number of files per batch (default: 20)        |
 
 ### Example with Multiple Exclude Folders
 
@@ -157,15 +187,27 @@ The script requires a prompt file named `generate_tags.md` in the same directory
 ./generate_tags.py --exclude "/path/to/exclude1" --exclude "/path/to/exclude2"
 ```
 
-### Example Using OpenAI with Delay
-
-When using OpenAI, you might hit rate limits. Adding a delay between files helps:
+### Example for Large Vaults
 
 ```bash
-./generate_tags.py --provider openai --api-key "your-api-key" --delay 5
+./generate_tags.py --batch-mode --batch-size 30 --delay 2 --limit 100
 ```
 
-This adds a 5-second pause between processing each file, which reduces the chances of hitting rate limits.
+This processes up to 100 files in batches of 30, with a 2-second delay between files.
+
+## Batch Processing
+
+For large vaults with many files to process, the script offers batch processing:
+
+- **Automatic Batching**: Use `--batch-mode` to enable batching when processing many files
+- **Configurable Batch Size**: Set `--batch-size` to control how many files are processed together (default: 20)
+- **Batch Pauses**: 30-second pause between batches to avoid overwhelming the AI service
+- **Progress Tracking**: Clear progress indicators show batch and overall progress
+
+Example for processing a large vault:
+```bash
+./generate_tags.py --batch-mode --batch-size 25
+```
 
 ## LLM Provider Support
 
@@ -197,6 +239,24 @@ To use OpenAI instead of Ollama, you need to:
 
 The script uses "gpt-3.5-turbo" as the default OpenAI model, which provides a good balance between availability, cost, and quality. For even better tagging quality, you can use "gpt-4" or "o1-mini", though these may have different quota limits or costs.
 
+## Processing Logic
+
+The script uses intelligent processing logic to avoid unnecessary work:
+
+### File Selection Criteria
+
+1. **Unprocessed Files**: Any file without a `processed` timestamp in its frontmatter
+2. **Modified Files**: Files modified after their `processed` timestamp (with 15-minute cooldown)
+3. **Recently Processed**: Files processed within the last 15 minutes (ignore buffer for edge cases)
+
+### Cooldown System
+
+- **15-minute cooldown**: Prevents rapid reprocessing of the same file
+- **Ignore buffer**: Recently processed files are always included to handle timing edge cases
+- **Modification tracking**: Only reprocesses files that have actually changed
+
+This system ensures efficient processing while avoiding missed files due to timing issues.
+
 ## Logging
 
 The script automatically creates log files in a `logs` directory next to the script. Each log file is named with the current date (`generate_tags_YYYY-MM-DD.log`) and contains detailed information about the script's execution, including any errors or warnings.
@@ -214,22 +274,65 @@ Log files are helpful for troubleshooting and reviewing what happened during pre
 
 ## Scheduling
 
+### Flexible Scheduling
+
+Since the script only processes files that need attention, you can run it more frequently than traditional "daily" scripts:
+
+**Frequent runs (recommended):**
+```bash
+# Every 2 hours
+0 */2 * * * /path/to/generate_tags.py
+
+# Every hour during work hours
+0 9-17 * * * /path/to/generate_tags.py
+```
+
+**Traditional daily run:**
+```bash
+# Once daily at 1 AM
+0 1 * * * /path/to/generate_tags.py
+```
+
 ### On Unix/Linux/macOS (cron)
 
-To run the script daily at 1 AM:
+To run the script every 2 hours:
 
 ```
-0 1 * * * /path/to/generate_tags.py
+0 */2 * * * /path/to/generate_tags.py
 ```
 
 ### On Windows (Task Scheduler)
 
 1. Open Task Scheduler
 2. Create a new Basic Task
-3. Set the trigger to "Daily"
+3. Set the trigger to your preferred frequency (hourly, daily, etc.)
 4. Set the action to "Start a program"
 5. Program: `python`
 6. Arguments: `C:\path\to\generate_tags.py`
+
+## Troubleshooting
+
+### Common Issues
+
+**No files found for processing:**
+- Check that your `INPUT_FOLDER` path is correct
+- Verify that files aren't being excluded by `EXCLUDE_FOLDERS`
+- Run with `--debug` to see detailed file scanning information
+
+**Processing timestamp issues:**
+- Files track processing time in their frontmatter with a `processed` field
+- If you need to force reprocessing, remove the `processed` field from the frontmatter
+- The 15-minute cooldown prevents rapid reprocessing
+
+**Rate limiting with OpenAI:**
+- Use `--delay 5` to add delays between API calls
+- Consider using `--batch-mode` with smaller batch sizes
+- Monitor your OpenAI usage dashboard
+
+**Large vault performance:**
+- Use `--batch-mode` for processing many files
+- Adjust `--batch-size` based on your system and AI service capacity
+- Use `--limit` to process files incrementally
 
 ## License
 
