@@ -51,26 +51,6 @@ def load_config():
     logger.info("No config file found, using default configuration")
     return default_config
 
-def get_previous_day_boundaries(override_date=None):
-    """Get start/end time boundaries for previous day or specified date"""
-    if override_date:
-        try:
-            target_date = parser.parse(override_date).date()
-            logger.info(f"Using override date: {target_date}")
-        except ValueError:
-            logger.error(f"Invalid date format: {override_date}, using previous day")
-            target_date = (datetime.now() - timedelta(days=1)).date()
-    else:
-        target_date = (datetime.now() - timedelta(days=1)).date()
-    
-    start_boundary = datetime.combine(target_date, datetime.min.time())
-    end_boundary = datetime.combine(target_date, datetime.max.time())
-    
-    logger.info(f"Target date: {target_date}")
-    logger.info(f"Start/end boundaries: {start_boundary.date()} to {end_boundary.date()}")
-    
-    return start_boundary, end_boundary
-
 def get_file_creation_time(file_path):
     """Get file creation time with platform-specific handling"""
     if sys.platform == 'darwin':  # macOS
@@ -84,14 +64,18 @@ def get_file_creation_time(file_path):
     else:  # Windows/Linux
         return datetime.fromtimestamp(os.path.getctime(file_path))
 
-def find_md_files_from_previous_day(input_folder, exclude_folders, start_boundary, end_boundary):
-    """Find markdown files created/modified in the specified time range by humans (not by scripts)"""
+def find_files_to_process(input_folder, exclude_folders):
+    """Find markdown files that need processing based on processed timestamp"""
     md_files = []
     skipped_files = 0
+    already_processed_files = 0
     
-    logger.info(f"Searching for Markdown files in: {input_folder}")
-    logger.info(f"Using date range: {start_boundary.date()} to {end_boundary.date()}")
+    logger.info(f"Searching for Markdown files to process in: {input_folder}")
     logger.info(f"Excluding folders: {exclude_folders}")
+    
+    # Time thresholds
+    now = datetime.now()
+    recent_threshold = now - timedelta(minutes=15)  # For ignore buffer
     
     for root, _, files in os.walk(input_folder):
         # Skip excluded folders
@@ -103,106 +87,55 @@ def find_md_files_from_previous_day(input_folder, exclude_folders, start_boundar
                 continue
                 
             file_path = os.path.join(root, file)
-            file_ctime = get_file_creation_time(file_path)
             file_mtime = datetime.fromtimestamp(os.path.getmtime(file_path))
             
-            logger.debug(f"File: {file_path}, Creation: {file_ctime}, Modified: {file_mtime}")
-            
-            # Check if the file's timestamp is in the specified range
-            file_in_date_range = False
-            if (start_boundary <= file_ctime <= end_boundary) or (start_boundary <= file_mtime <= end_boundary):
-                file_in_date_range = True
+            try:
+                with open(file_path, 'r', encoding='utf-8') as f:
+                    content = f.read()
                 
-                # Now check if it's been processed and not modified since
-                try:
-                    with open(file_path, 'r', encoding='utf-8') as f:
-                        content = f.read()
-                    
-                    frontmatter, _ = parse_frontmatter(content)
-                    
-                    # If it has a processed timestamp, check if modified since
-                    if 'processed' in frontmatter:
-                        try:
-                            processed_time = parser.parse(str(frontmatter['processed']))
-                            # Use a 15-minute cooldown period to account for all automated scripts
-                            cooldown_period = timedelta(minutes=15)
-                            
-                            # Compare with cooldown: Only include the file if it was modified significantly after processing
-                            # This filters out modifications made by any automated script
-                            if file_mtime > (processed_time + cooldown_period):
-                                # Modified after cooldown period - likely a human modification
-                                logger.debug(f"File modified after cooldown period: {file_path}")
-                                md_files.append(file_path)
-                            else:
-                                # Modified within cooldown period - likely an automated script
-                                logger.debug(f"Skipping file modified within cooldown period (likely by script): {file_path}")
-                                skipped_files += 1
-                        except (ValueError, TypeError):
-                            # Can't parse timestamp - include it to be safe
-                            md_files.append(file_path)
-                    else:
-                        # No processed timestamp - include it
-                        logger.debug(f"No processed timestamp, including file: {file_path}")
-                        md_files.append(file_path)
-                except Exception as e:
-                    # Error reading file - include it to be safe
-                    logger.debug(f"Error checking frontmatter: {e}")
+                frontmatter, _ = parse_frontmatter(content)
+                
+                # Case 1: File has never been processed
+                if 'processed' not in frontmatter:
+                    logger.debug(f"Including unprocessed file: {file_path}")
                     md_files.append(file_path)
-            
-            # If not already included based on file timestamps, check frontmatter dates
-            if not file_in_date_range and file_path not in md_files:
+                    continue
+                
+                # Case 2: File has been processed before
                 try:
-                    with open(file_path, 'r', encoding='utf-8') as f:
-                        content = f.read()
+                    processed_time = parser.parse(str(frontmatter['processed']))
                     
-                    frontmatter, _ = parse_frontmatter(content)
+                    # Apply ignore buffer - always process very recently processed files
+                    if processed_time > recent_threshold:
+                        logger.debug(f"Including recently processed file (ignore buffer): {file_path}")
+                        md_files.append(file_path)
+                        continue
                     
-                    # Check dates in frontmatter
-                    for date_field in ['created', 'date', 'creation_date', 'createdAt']:
-                        if date_field in frontmatter and frontmatter[date_field]:
-                            try:
-                                fm_date = parser.parse(str(frontmatter[date_field]))
-                                if not isinstance(fm_date, datetime):
-                                    fm_date = datetime.combine(fm_date, datetime.min.time())
-                                
-                                # Check if date is in range
-                                if start_boundary.date() <= fm_date.date() <= end_boundary.date():
-                                    # Also check processed timestamp if it exists
-                                    if 'processed' in frontmatter:
-                                        try:
-                                            processed_time = parser.parse(str(frontmatter['processed']))
-                                            # Use a 15-minute cooldown period to account for all automated scripts
-                                            cooldown_period = timedelta(minutes=15)
-                                            
-                                            # Compare with cooldown: Only include the file if it was modified significantly after processing
-                                            # This filters out modifications made by any automated script
-                                            if file_mtime > (processed_time + cooldown_period):
-                                                # Modified after cooldown period - likely a human modification
-                                                logger.debug(f"File modified after cooldown period: {file_path}")
-                                                md_files.append(file_path)
-                                            else:
-                                                # Modified within cooldown period - likely an automated script
-                                                logger.debug(f"Skipping file modified within cooldown period (likely by script): {file_path}")
-                                                skipped_files += 1
-                                        except (ValueError, TypeError):
-                                            # Can't parse timestamp - include it to be safe
-                                            md_files.append(file_path)
-                                    else:
-                                        # No processed timestamp - include it
-                                        logger.debug(f"Frontmatter date in range with no processed timestamp")
-                                        md_files.append(file_path)
-                                        break
-                            except (ValueError, TypeError):
-                                # Skip unparseable dates
-                                pass
-                except Exception as e:
-                    logger.debug(f"Error checking frontmatter: {e}")
+                    # Check if modified since processed timestamp (plus cooldown)
+                    cooldown_threshold = processed_time + timedelta(minutes=15)
+                    
+                    if file_mtime > cooldown_threshold:
+                        logger.debug(f"Including file modified after cooldown: {file_path}")
+                        md_files.append(file_path)
+                    else:
+                        logger.debug(f"Skipping already processed file: {file_path}")
+                        already_processed_files += 1
+                        
+                except (ValueError, TypeError):
+                    # Can't parse timestamp - include it to be safe
+                    logger.debug(f"Including file with invalid processed timestamp: {file_path}")
+                    md_files.append(file_path)
+                    
+            except Exception as e:
+                # Error reading file - include it to be safe
+                logger.debug(f"Error checking frontmatter: {e}")
+                md_files.append(file_path)
     
     # Log results
     if not md_files:
-        logger.warning("No files were found matching the date criteria!")
-        if skipped_files > 0:
-            logger.warning(f"{skipped_files} files were in date range but skipped (already processed)")
+        logger.warning("No files were found for processing!")
+        if already_processed_files > 0:
+            logger.warning(f"{already_processed_files} files were skipped (already processed)")
     else:
         logger.info(f"Found {len(md_files)} files for processing")
         for file_path in md_files[:5]:  # Show first 5 files
@@ -210,8 +143,8 @@ def find_md_files_from_previous_day(input_folder, exclude_folders, start_boundar
         if len(md_files) > 5:
             logger.info(f"  - ... and {len(md_files) - 5} more files")
             
-        if skipped_files > 0:
-            logger.info(f"Additionally, {skipped_files} files in date range were skipped (already processed)")
+        if already_processed_files > 0:
+            logger.info(f"Additionally, {already_processed_files} files were skipped (already processed)")
     
     return md_files
 
@@ -241,38 +174,44 @@ def parse_frontmatter(content):
     
     return {}, content
 
-def update_frontmatter_with_tags(content, tags):
+def update_frontmatter_with_tags(content, tags, mark_as_processed=True):
     """Update note frontmatter with new tags (avoiding duplicates)"""
     frontmatter, rest_content = parse_frontmatter(content)
     
     # Parse tag string into list
     tag_list = [tag.strip('#') for tag in tags.split() if tag.startswith('#')]
     
-    # Update or create tags in frontmatter
-    if 'tags' in frontmatter:
-        existing_tags = frontmatter['tags']
-        
-        # Normalize tags format
-        if existing_tags is None:
-            existing_tags = []
-        elif isinstance(existing_tags, str):
-            existing_tags = [existing_tags]
-        elif not isinstance(existing_tags, list):
-            existing_tags = [str(existing_tags)]
-            
-        # Add new tags that don't already exist (case-insensitive)
-        existing_lower = [t.lower() for t in existing_tags]
-        for tag in tag_list:
-            if tag.lower() not in existing_lower:
-                existing_tags.append(tag)
-                logger.debug(f"Adding tag: {tag}")
-                
-        frontmatter['tags'] = existing_tags
-    else:
-        frontmatter['tags'] = tag_list
+    # Only proceed if we have tags to add or if we're explicitly marking as processed
+    if not tag_list and not mark_as_processed:
+        return content
     
-    # Add or update processed timestamp
-    frontmatter['processed'] = datetime.now().isoformat()
+    # Update or create tags in frontmatter
+    if tag_list:  # Only update tags if we have new tags
+        if 'tags' in frontmatter:
+            existing_tags = frontmatter['tags']
+            
+            # Normalize tags format
+            if existing_tags is None:
+                existing_tags = []
+            elif isinstance(existing_tags, str):
+                existing_tags = [existing_tags]
+            elif not isinstance(existing_tags, list):
+                existing_tags = [str(existing_tags)]
+                
+            # Add new tags that don't already exist (case-insensitive)
+            existing_lower = [t.lower() for t in existing_tags]
+            for tag in tag_list:
+                if tag.lower() not in existing_lower:
+                    existing_tags.append(tag)
+                    logger.debug(f"Adding tag: {tag}")
+                    
+            frontmatter['tags'] = existing_tags
+        else:
+            frontmatter['tags'] = tag_list
+    
+    # Add or update processed timestamp only if explicitly requested
+    if mark_as_processed:
+        frontmatter['processed'] = datetime.now().isoformat()
     
     # Generate new frontmatter with clean formatting
     new_frontmatter = yaml.dump(frontmatter, default_flow_style=False, sort_keys=False)
@@ -432,7 +371,7 @@ def generate_tags_with_ai(content, prompt, vault_tags, config, provider=None):
                 f"{server_address}/api/generate",
                 headers={"Content-Type": "application/json"},
                 json=payload,
-                timeout=120
+                timeout=900
             )
             
             if response.status_code == 200:
@@ -452,7 +391,6 @@ def main():
     # Parse command line arguments
     import argparse
     parser = argparse.ArgumentParser(description='Generate and update tags for Obsidian notes')
-    parser.add_argument('--date', help='Override date to check (YYYY-MM-DD format)')
     parser.add_argument('--debug', action='store_true', help='Enable detailed debug logging')
     parser.add_argument('--input', help='Override input folder')
     parser.add_argument('--exclude', action='append', help='Override exclude folders (can be used multiple times)')
@@ -463,6 +401,11 @@ def main():
     parser.add_argument('--delay', type=float, default=0, help='Delay between processing files (seconds)')
     parser.add_argument('--log-level', choices=['DEBUG', 'INFO', 'WARNING', 'ERROR', 'CRITICAL'], 
                       default='INFO', help='Set logging level')
+    parser.add_argument('--limit', type=int, default=0, help='Limit number of files to process (0 for no limit)')
+    parser.add_argument('--batch-mode', action='store_true', 
+                      help='Enable batch mode for processing large numbers of files')
+    parser.add_argument('--batch-size', type=int, default=20, 
+                      help='Number of files to process in each batch (with batch mode)')
     args = parser.parse_args()
     
     # Set log level
@@ -516,17 +459,21 @@ def main():
         logger.error(f"Error reading prompt file: {e}")
         return
     
-    # Get time boundaries and find matching files
-    start_boundary, end_boundary = get_previous_day_boundaries(args.date)
+    # Find files to process using new method
     try:
-        md_files = find_md_files_from_previous_day(input_folder, exclude_folders, start_boundary, end_boundary)
+        md_files = find_files_to_process(input_folder, exclude_folders)
     except Exception as e:
         logger.error(f"Error finding files: {e}")
         return
     
     if not md_files:
-        logger.info("No files found matching the date criteria. Exiting.")
+        logger.info("No files found for processing. Exiting.")
         return
+    
+    # Apply file limit if specified
+    if args.limit > 0 and len(md_files) > args.limit:
+        logger.info(f"Limiting processing to {args.limit} files (out of {len(md_files)} found)")
+        md_files = md_files[:args.limit]
         
     # Collect vault tags
     try:
@@ -535,56 +482,117 @@ def main():
         logger.error(f"Error collecting vault tags: {e}")
         vault_tags = []
     
-    # Process each file
+    # Process each file - with batch mode support
     tags_added = 0
     files_with_errors = 0
     total_files = len(md_files)
-    
+
     try:
-        for index, file_path in enumerate(md_files):
-            filename = os.path.basename(file_path)
-            progress = f"[{index+1}/{total_files}]"
-            logger.info(f"{progress} Processing: {filename}")
+        # Check if batch mode is enabled and needed
+        if args.batch_mode and len(md_files) > args.batch_size:
+            logger.info(f"Batch mode: Processing {len(md_files)} files in batches of {args.batch_size}")
             
-            try:
-                # Read and clean content
-                with open(file_path, 'r', encoding='utf-8') as f:
-                    content = f.read()
-                clean_content = clean_note_content(content)
+            total_batches = (len(md_files) + args.batch_size - 1) // args.batch_size
+            
+            for batch_num in range(total_batches):
+                start_idx = batch_num * args.batch_size
+                end_idx = min(start_idx + args.batch_size, len(md_files))
+                batch_files = md_files[start_idx:end_idx]
                 
-                # Generate tags
-                generated_tags = generate_tags_with_ai(clean_content, tag_prompt, vault_tags, config)
+                logger.info(f"Processing batch {batch_num+1}/{total_batches} ({len(batch_files)} files)")
                 
-                if not generated_tags:
-                    logger.warning(f"{progress} No tags generated for {filename}")
-                    continue
+                # Process each file in this batch
+                for index, file_path in enumerate(batch_files):
+                    batch_index = start_idx + index
+                    filename = os.path.basename(file_path)
+                    progress = f"[{batch_index+1}/{total_files}]"
+                    logger.info(f"{progress} Processing: {filename}")
                     
-                logger.info(f"{progress} Generated tags: {generated_tags}")
+                    try:
+                        # Read and clean content
+                        with open(file_path, 'r', encoding='utf-8') as f:
+                            content = f.read()
+                        clean_content = clean_note_content(content)
+                        
+                        # Generate tags
+                        generated_tags = generate_tags_with_ai(clean_content, tag_prompt, vault_tags, config)
+                        
+                        if not generated_tags:
+                            logger.warning(f"{progress} No tags generated for {filename} - not marking as processed")
+                            continue
+                            
+                        logger.info(f"{progress} Generated tags: {generated_tags}")
+                        
+                        # Update frontmatter with tags AND mark as processed
+                        updated_content = update_frontmatter_with_tags(content, generated_tags, mark_as_processed=True)
+                        with open(file_path, 'w', encoding='utf-8') as f:
+                            f.write(updated_content)
+                            
+                        logger.info(f"{progress} Updated tags in {filename}")
+                        tags_added += 1
+                        
+                        # Add delay between files if specified
+                        if args.delay > 0 and llm_provider.lower() == "openai" and index < len(batch_files) - 1:
+                            logger.info(f"Waiting {args.delay}s before next file...")
+                            time.sleep(args.delay)
+                            
+                    except Exception as e:
+                        logger.error(f"{progress} Error processing {filename}: {e} - not marking as processed")
+                        files_with_errors += 1
                 
-                # Update frontmatter
-                updated_content = update_frontmatter_with_tags(content, generated_tags)
-                with open(file_path, 'w', encoding='utf-8') as f:
-                    f.write(updated_content)
+                # Pause between batches
+                if batch_num < total_batches - 1:
+                    logger.info(f"Batch {batch_num+1} complete. Waiting 30 seconds before next batch...")
+                    time.sleep(30)  # Pause between batches to avoid overloading the LLM service
+        
+        else:
+            # Standard processing (no batching)
+            for index, file_path in enumerate(md_files):
+                filename = os.path.basename(file_path)
+                progress = f"[{index+1}/{total_files}]"
+                logger.info(f"{progress} Processing: {filename}")
+                
+                try:
+                    # Read and clean content
+                    with open(file_path, 'r', encoding='utf-8') as f:
+                        content = f.read()
+                    clean_content = clean_note_content(content)
                     
-                logger.info(f"{progress} Updated tags in {filename}")
-                tags_added += 1
-                
-                # Add delay between files if specified
-                if args.delay > 0 and llm_provider.lower() == "openai" and index < total_files - 1:
-                    logger.info(f"Waiting {args.delay}s before next file...")
-                    time.sleep(args.delay)
+                    # Generate tags
+                    generated_tags = generate_tags_with_ai(clean_content, tag_prompt, vault_tags, config)
                     
-            except Exception as e:
-                logger.error(f"{progress} Error processing {filename}: {e}")
-                files_with_errors += 1
-                
+                    if not generated_tags:
+                        logger.warning(f"{progress} No tags generated for {filename} - not marking as processed")
+                        continue
+                        
+                    logger.info(f"{progress} Generated tags: {generated_tags}")
+                    
+                    # Update frontmatter with tags AND mark as processed
+                    updated_content = update_frontmatter_with_tags(content, generated_tags, mark_as_processed=True)
+                    with open(file_path, 'w', encoding='utf-8') as f:
+                        f.write(updated_content)
+                        
+                    logger.info(f"{progress} Updated tags in {filename}")
+                    tags_added += 1
+                    
+                    # Add delay between files if specified
+                    if args.delay > 0 and llm_provider.lower() == "openai" and index < total_files - 1:
+                        logger.info(f"Waiting {args.delay}s before next file...")
+                        time.sleep(args.delay)
+                        
+                except Exception as e:
+                    logger.error(f"{progress} Error processing {filename}: {e} - not marking as processed")
+                    files_with_errors += 1
+                    
     except KeyboardInterrupt:
         logger.warning("Process interrupted by user")
-    
+
     # Log summary
     logger.info(f"=== Summary: {tags_added}/{total_files} files tagged, {files_with_errors} errors ===")
     if llm_provider.lower() == "openai" and args.delay == 0 and files_with_errors > 0:
         logger.info("Tip: Use --delay 5 to avoid OpenAI API rate limits")
+    if tags_added > 10 and not args.batch_mode:
+        logger.info("Tip: Use --batch-mode for processing many files")
 
 if __name__ == "__main__":
     # Set up logging
